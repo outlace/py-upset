@@ -1,5 +1,3 @@
-__author__ = 'leo@opensignal.com'
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,7 +7,7 @@ from functools import partial
 from matplotlib.patches import Rectangle, Circle
 
 class UpSetPlot():
-    def __init__(self, n_bases, n_data_points, space=3, log=False):
+    def __init__(self, n_bases, n_data_points, space=3, log=False, filtered=False):
         """
         Generates figures and axes.
 
@@ -29,6 +27,7 @@ class UpSetPlot():
         # figure details
         self.space = space
         self.log = log
+        self.filtered = filtered
 
         # set figure properties
         self.rows = n_bases
@@ -129,10 +128,10 @@ class UpSetPlot():
         """
         # calculate sum of elements for lower plot representing the percentage of missing values
         total_nb_elements = sum(occurance_list)
-        # Plots horizontal bar plot for base set sizes
+        # Plots horizontal bar plot for base set sizes (lower left plot)
         ylim = self._base_sets_plot(set_sizes, total_nb_elements)
         self._table_names_plot(set_names, ylim)
-        # bar plot showing the set sizes 
+        # bar plot showing the set sizes (main plot)
         xlim = self._inters_sizes_plot(occurance_list)
         set_row_map = dict(zip(unique_bases, self.y_values))
         # TODO: adapt _inters_matrix to the available data structures
@@ -288,7 +287,8 @@ class UpSetPlot():
             ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 15))
         else:
             xlim = ax.get_xlim()
-            for i in range(5, 10):
+            range_labels = range(5,10) if self.filtered else range(1,10,2)
+            for i in range_labels:
                 ax.text(xlim[1]*0.99, 10**i * 1.3, r'$10^{%i}$' % i, ha='center', va='bottom', color='grey')
 
 
@@ -405,6 +405,12 @@ def get_bases(column_list, base_sets):
 
 # -------- main --------
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--linear', help='Main histogram has linear instead of logarithmic scale', default=False, action='store_true')
+    parser.add_argument('--filter', help='Display only the 99.99% most occuring sub sets.', default=False, action='store_true')
+    args = parser.parse_args()
+    # now the 'real' main can begin
     import sys
     path_missing_dict = '/home/sebastian/Documents/astonomy-python/data-storage/dr2_storage_finished_list_full.npy'
     mis_list = np.load(path_missing_dict)
@@ -414,8 +420,7 @@ if __name__ == '__main__':
     occu_list = [dic['occurance'] for dic in mis_list]
     base_list = [get_bases(dic['nan-columns'], get_base_sets(n_mis)) for dic in mis_list]
     # filter out the top 99.99% most frequently occuring base-set combinations
-    filter_set = True
-    if filter_set:
+    if args.filter:
         total_nb_entries = sum(occu_list)
         print(total_nb_entries)
         sum_occ = 0
@@ -480,7 +485,7 @@ if __name__ == '__main__':
         base_set_names = base_set_names_sorted
         unique_bases = unique_bases_sorted
 
-    upset = UpSetPlot(n_bases=len(unique_bases), n_data_points=len(base_list), space=3, log=False)
+    upset = UpSetPlot(n_bases=len(unique_bases), n_data_points=len(base_list), space=3, log=(not args.linear), filtered=args.filter)
     fig_dict = upset.main_plot(set_names=base_set_names, occurance_list=occu_list, in_sets=base_list, out_sets=invert_base_list,
             set_sizes=base_occurances, unique_bases=unique_bases)
 
