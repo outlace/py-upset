@@ -1,0 +1,12 @@
+# pyc files
+*.pyc
+
+# vim save files 
+.*.py.*
+
+# ignore build directory
+build/
+
+# images & pdfs
+*.png
+*.pdf
