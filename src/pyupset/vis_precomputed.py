@@ -7,7 +7,7 @@ from functools import partial
 from matplotlib.patches import Rectangle, Circle
 
 class UpSetPlot():
-    def __init__(self, n_bases, n_data_points, space=3, log=False, filtered=False):
+    def __init__(self, n_bases, n_data_points, log=False, filtered=False):
         """
         Generates figures and axes.
 
@@ -303,6 +303,64 @@ class UpSetPlot():
 
         return ax.get_xlim()
 
+    def _inters_sizes_plot_diff(self, x_vals, diff_hists, set_sizes, y_title):
+        """Plots difference of histograms in bars"""
+        # preparing axes
+        ax = self.ax_intbars
+        width = .5
+        interpol='sinc'
+        self._strip_axes(ax, keep_spines=['left'], keep_ticklabels=['left'])
+        # x values in axes
+        bar_x_values = self.x_values
+        # function constructing "histogram with color coding"
+        def gbar(ax, x, y, hists, max_val, width=0.5, bottom=0, interpol='sinc'):
+            # bottom: always 0 for histogram
+            for i, (left, top) in enumerate(zip(x, y)):
+                right = left + width
+                hist = (hists[i][::-1])[:,None]
+                im = ax.imshow(hist, interpolation=interpol, cmap=plt.cm.coolwarm,
+                               extent=(left, right, bottom, top), alpha=0.8, vmin=-1.*max_val, vmax=max_val)
+                path = Path([[left, bottom], [left, top], [right, top], [right, bottom], [left, bottom]])
+                patch = PathPatch(path, facecolor='none')
+                ax.add_patch(patch)
+            return im
+
+        n_x = len(bar_x_values)
+        fig = figure()
+        xmin, xmax = xlim = 0,n_x+0.2
+        ymin, ymax = ylim = np.min(x_vals), np.max(x_vals)
+        ax = fig.add_subplot(111, xlim=xlim, ylim=ylim, autoscale_on=False)
+        # Hide the right and top spines
+        # ax.spines['right'].set_visible(False)
+        # ax.spines['top'].set_visible(False)
+        # ax.spines['bottom'].set_visible(False)
+        # ax.tick_params(which='both', axis='x', bottom=False, labelbottom=False)
+        # ax.set_ylabel('RUWE', labelpad=20, size=14)
+
+        y = np.full(shape=bar_x_values.shape,fill_value=ylim[1])
+        # plot bar chart
+        im = gbar(ax, bar_x_values, y, diff_hists, width=width, bottom=ylim[1], interpol=interpol, max_val=max(np.abs(np.min(hist)),np.abs(np.max(hist))))
+        cbar = plt.colorbar(im)
+        cbar.set_label('Relative error', size=14)
+        ax.set_aspect('auto')
+
+        # display set sizes 
+        ylim = ax.get_ylim()
+        label_vertical_gap = (ylim[1] - ylim[0]) / 60
+        for x, y in zip(self.x_values, set_sizes):
+            ax.text(x, y + label_vertical_gap, "%.5g" % y,
+                    rotation=90, ha='center', va='bottom')
+
+        gap = max(ylim) / 500.0 * 20
+        if not self.log:
+            ax.set_ylim(ylim[0] - gap, ylim[1] + gap)
+        ax.spines['left'].set_bounds(ylim[0], ylim[1])
+
+        ax.set_axisbelow(True)
+        ax.set_ylabel("Intersection size", labelpad=8, fontweight='bold', fontsize=13)
+        return ax.get_xlim()
+
+
     def _inters_matrix(self, in_sets, out_sets, xlims, ylims, set_row_map):
         """
         Plots intersection matrix.
@@ -349,56 +407,297 @@ class UpSetPlot():
             if len(in_y)>0:
                 ax.vlines(self.x_values[col_num], min(in_y), max(in_y), lw=3.5, color=self._color_for_query(frozenset(in_s)))
 
+# Histogram preparation
+class PrepareHistogram:
+    def __init__(self, histogram, start, stop):
+        self.hist = histogram
+        self.start = start
+        self.stop = stop
+        self.bins = np.linspace(start=start, stop=stop, num=histogram.shape[0]+1)
+        self.rebinned = False
+        self.org_len = histogram.shape[0] # to check when rebinning other histogram
+
+    def get_hist(self):
+        """Returns histogram and bins; analogous to np.histogram function"""
+        return self.hist, self.bins
+
+    def set_range(self, xmin, xmax):
+        """Sets the range of the histogram"""
+    
+    def _get_min_max_idx(self, xlim=None):
+        """Returns the bin index to the minimum and maximum non zero bin"""
+        if xlim is None:
+            print('xlim is None')
+            return np.min(np.nonzero(self.hist)), np.max(np.nonzero(self.hist))
+        else:
+            # here we are concearned about the bin center
+            bin_centers = self.get_bin_midpoints()
+            # np.argmax(arr>x) finds index in array where value x gets exceeded, 
+            # therefore in the xlim[0] case we subtract a bin-length from the xlim[0] to get the right bin
+            bin_distance = np.mean(np.diff(bin_centers))
+            min_idx = np.argmax(bin_centers>(xlim[0]-bin_distance))
+            # if xlim[1] is larger than the maximum value in bin_centers than the lowest bin gets returned
+            # to circumvent this, we check if xlim[1] exceeds the maximum of bin_centers
+            if xlim[1]>=np.max(bin_centers):
+                max_idx = np.max(np.nonzero(self.hist))
+            else:
+                max_idx = np.argmax(bin_centers>xlim[1])
+            return min_idx, max_idx
+
+    def get_bin_midpoints(self):
+        """Returns midpoints array for histogram (e.g. for plotting bar chart)"""
+        return self.bins[:-1] + np.diff(self.bins)/2
+    
+    def rebin(self, nbins):
+        """Rebin the histogram to a smaller number of bins"""
+        if self.rebinned:
+            raise ValueError('Trying to rebin for a second time, might be dangerous and is currently omitted!')
+        err_msg = 'The input number of bins has to be of type "unsigned int", ' \
+                  'smaller than {} and has to divide {} without any remainder'.format(self.hist.shape[0], self.org_len)
+        if isinstance(nbins, int):
+            if (nbins>self.hist.shape[0]) or (nbins<0) or (self.org_len%nbins!=0):
+                raise ValueError(err_msg)
+        else:
+            raise ValueError(err_msg)
+        # save rebin nbins:
+        self.rebinned = True
+        # rebin histogram
+        self.hist = np.sum(self.hist.reshape(nbins, self.hist.size//nbins), axis=1)
+        self.bins = np.linspace(start=self.start, stop=self.stop, num=nbins+1)
+        return self.hist, self.bins
+
+    def _rebin_hist(self, other_hist):
+        """Rebin other histogram to the size of self.hist"""
+        err_msg = 'The input histogram has to have a larger number of bins than self.hist ({})'.format(self.hist.shape[0])
+        if other_hist.shape[0]<=self.hist.shape[0]:
+            raise ValueError(err_msg)
+        nbins = self.hist.shape[0]
+        # rebin histogram
+        other_hist = np.sum(other_hist.reshape(nbins, other_hist.size//nbins), axis=1)
+        return other_hist
+
+    # draw n random samples from histogram
+    def _draw_from_hist(self, n):
+        bin_midpoints = self.get_bin_midpoints()
+        cdf = np.cumsum(self.hist)
+        cdf = cdf / cdf[-1]
+        values = np.random.rand(n)
+        value_bins = np.searchsorted(cdf, values)
+        random_from_cdf = bin_midpoints[value_bins]
+        return np.histogram(random_from_cdf, bins=self.bins)[0]
+
+    def draw_n_times(self, n_times, n_samples):
+        """Draw from the histogram n_samples, and repeat this process (for smoothing) n_times"""
+        from tqdm import tqdm
+        add_hist = np.zeros(shape=self.hist.shape)
+        for i in tqdm(range(n_times)):
+            add_hist += self._draw_from_hist(n_samples)
+        return add_hist/n_times
+
+    def get_diff(self, sub_hist, log=False, xlim=None):
+        """Return a differnce array for each bin in the histogram
+                - log: if the positive and negative differences should be considered with the log scale
+                       (meaning: differences<1: 0, else: sign(diff)*log(abs(diff))) 
+        """
+        # first of all check if self.hist has been rebinned; if so rebin sub_hist
+        if self.rebinned and self.org_len==sub_hist.shape[0]:
+            sub_hist = self._rebin_hist(sub_hist)
+        # first draw a sample from the "super" histogram, then compare it to the "sub_hist", now we fix n_times=10
+        drawn_hist = self.draw_n_times(n_times=10, n_samples=np.sum(sub_hist))
+        # relative difference between expected (=drawn) histogram and sub_hist
+        # first check if drawn_hist has non-zero values everywhere sub_hist has also non-zero values 
+        #     (make something like laplace correction)
+        drawn_hist[(sub_hist!=0) & (drawn_hist==0)] = 1
+        diff_h = (sub_hist-drawn_hist)/(drawn_hist)
+        # get nan's where sub_hist&drawn_hist=0, fill them with 0's
+        diff_h[~np.isfinite(diff_h)] = 0
+        if log:
+            # special form of log10: in order to cope with negative differences
+            diff_h[np.abs(diff_h)<1]=0.
+            diff_h[np.abs(diff_h)>=1] = np.sign(diff_h[np.abs(diff_h)>=1])*np.log10(np.abs(diff_h[np.abs(diff_h)>=1]))
+        min_idx, max_idx = self._get_min_max_idx(xlim=xlim)
+        return diff_h[min_idx:max_idx], self.get_bin_midpoints()[min_idx:max_idx]
 
 
-# ################################### own functions ###########################################
-# function which seperates the differnt bases
-# - input: list of lists containing nan column names 
-def get_base_sets(nan_list):
-    list_of_lists = nan_list.copy()
-    list_of_lists.sort(key=len)
-    base_sets = []
-    for lst in list_of_lists:
-        x = set(lst)
-        for base in base_sets:
-            # some instances are in two base sets: 
-            # if statement ensures that the sets are represented as a whole 
-            #    -> one value can therefore exist in multiple base sets (which is what we want)
-            if len(set(x)-set(base))==(len(x)-len(base)):
-                x -= set(base)
-        if len(list(x))>0:
-            base_sets.append(list(x))
-    # remove duplicates in bases
-    new_intersects = []
-    for i in range(len(base_sets)):
-        for j in range(i+1, len(base_sets)):
-            # if there exists an intersection
-            intersect = list(set(base_sets[i]).intersection(base_sets[j]))
-            if len(intersect)>0:
-                # save it in new_intersects
-                new_intersects.append(intersect)
-                # then remove it from list_of_list[i&j]
-                for item in intersect:
-                    base_sets[i].remove(item)
-                    base_sets[j].remove(item)
-    # keep only unique elements       
-    new_intersects = [list(x) for x in set(tuple(x) for x in new_intersects)]
-    new_intersects.sort(key=len, reverse=True)
-    # append to main list
-    for base in new_intersects:
-        base_sets.append(base)
-    # return only not empty lists
-    return [x for x in base_sets if x != []]
+class PrepareData:
+    def __init__(self, path, base_names, hist_name=None):
+        """Initialize the class
+            - path (str): path to the base_set array (containing dictionaries)
+            - Base_names: list of tuples with [(variable_name_in_base_set, variable_name_representing_this_set), (.,.), ...]
+            - hist_name: name of histogram which should be be displayed in main plot as colour code in histogram
+        """
+        # sort the missing values in descending order
+        self.missing_list = sorted(np.load(path), key=lambda k: k['occurance'], reverse=True)
+        self.hist_name = None
+        if isinstance(hist_name, str):
+            base_set_keys = list(self.base_set[0].keys())
+            # remove occurance and nan-columns
+            base_set_keys.remove('occurance')
+            base_set_keys.remove('nan-columns')
+            if self.hist_name in base_set_keys:
+                self.hist_name = hist_name
+        self.remove_nbs = []
+        # additionally to returning base_fancy_names, the remove_nbs variable is set
+        self.base_fancy_names = self._get_base_set_fancy_names(base_names)
 
 
-def get_bases(column_list, base_sets):
-    """create list of missing bases (bases turned into numbers for easier comparability)"""
-    x = set(column_list)
-    base_lst = []
-    for i, base in enumerate(base_sets):
-        if x != x-set(base):
-            base_lst.append(i)
-    return base_lst
+    def _get_nan_cols_list(self):
+        """Returns the missing columns per set"""
+        return [dic['nan-columns'] for dic in self.missing_list]
+
+    def _get_occurance_list(self):
+        """Returns the set occurances"""
+        return [dic['occurance'] for dic in self.missing_list]
+
+    def _get_base_sets(self):
+        """seperates the differnt bases
+                - nan_list (list): list of lists containing nan column names
+        """
+        list_of_lists = self._get_nan_cols_list()
+        list_of_lists.sort(key=len)
+        base_sets = []
+        for lst in list_of_lists:
+            x = set(lst)
+            for base in base_sets:
+                # some instances are in two base sets: 
+                # if statement ensures that the sets are represented as a whole 
+                #    -> one value can therefore exist in multiple base sets (which is what we want)
+                if len(set(x)-set(base))==(len(x)-len(base)):
+                    x -= set(base)
+            if len(list(x))>0:
+                base_sets.append(list(x))
+        # remove duplicates in bases
+        new_intersects = []
+        for i in range(len(base_sets)):
+            for j in range(i+1, len(base_sets)):
+                # if there exists an intersection
+                intersect = list(set(base_sets[i]).intersection(base_sets[j]))
+                if len(intersect)>0:
+                    # save it in new_intersects
+                    new_intersects.append(intersect)
+                    # then remove it from list_of_list[i&j]
+                    for item in intersect:
+                        base_sets[i].remove(item)
+                        base_sets[j].remove(item)
+        # keep only unique elements       
+        new_intersects = [list(x) for x in set(tuple(x) for x in new_intersects)]
+        new_intersects.sort(key=len, reverse=True)
+        # append to main list
+        for base in new_intersects:
+            base_sets.append(base)
+        # return only not empty lists
+        return [x for x in base_sets if x != []]
+
+    def _get_bases(self, column_list, base_sets):
+        """create list of missing bases (bases turned into numbers for easier comparability)"""
+        x = set(column_list)
+        base_lst = []
+        for i, base in enumerate(base_sets):
+            if x != x-set(base):
+                base_lst.append(i)
+        return base_lst
+
+    def _get_list_of_bases_per_subset(self):
+        """Returns list of integers where each integer corresponds to the base set from self._get_base_sets()"""
+        return [self._get_bases(dic['nan-columns'], self._get_base_sets()) for dic in self.missing_list]
+
+    def _get_invert_list_of_bases_per_subset(self):
+        """invert the base list"""
+        invert_base_list = []
+        for base_l in self._get_list_of_bases_per_subset():
+            invert_base_list.append(list(set(self._get_unique_int_bases())-set(base_l)))
+        return invert_base_list
+
+    def _get_unique_int_bases(self):
+        """Returns the unique (int) bases"""
+        return list(set([item for sublist in self._get_list_of_bases_per_subset() for item in sublist]))
+
+    def _get_base_set_fancy_names(self, base_names):
+        """Returns a list of 'clean' base names"""
+        mapping_nbs_fancy_names = []
+        for (var_in_base, fancy_base_str) in base_names:
+            for i, base_elem in enumerate(self._get_base_sets()):
+                if var_in_base in base_elem:
+                    mapping_nbs_fancy_names.append((i, fancy_base_str))
+        mapping_nbs_fancy_names = sorted(mapping_nbs_fancy_names, key=lambda k: k[0])
+        bases, names = zip(*mapping_nbs_fancy_names)
+        # check out which bases are not supported by fancy_base_str
+        unique_bases = self._get_unique_int_bases()
+        self.remove_nbs.extend(list(set(self._get_unique_int_bases())-set(bases)))
+        return names
+
+    def _get_total_base_occurance(self):
+        """count how often a certain base is missing (each time a base is in a base list we
+        add up that total_base_occurance for that base...histogram for bases)
+        """
+        total_base_occurance = {}
+        none_missing = 0
+        for base in self._get_unique_int_bases():
+            total_base_occurance[base] = 0
+            for (base_l, occ) in zip(self._get_list_of_bases_per_subset(), self._get_occurance_list()):
+                if base in base_l:
+                    total_base_occurance[base] += occ
+                elif len(base_l) == 0:
+                    none_missing = occ
+        return total_base_occurance
+
+    def get_args_upset_class(self):
+        """Returns the main args for the py-upset class init call, i.e.:
+            - n_bases=len(unique_bases)
+            - n_data_points=len(base_list)
+        """
+        # 1) get variables:
+        unique_bases, base_list = self._get_unique_int_bases(), self._get_list_of_bases_per_subset()
+        # 2) remove the unwanted data column:
+        # remove feature 8 from the pool of features
+        for remove_nb in self.remove_nbs:
+            # remove in unique_bases
+            if remove_nb in unique_bases:
+                unique_bases.remove(remove_nb)
+            # remove in base_list
+            for i in range(len(base_list)):
+                if remove_nb in base_list[i]:
+                    base_list[i].remove(remove_nb)
+        # return variables
+        n_bases, n_data_points = len(unique_bases), len(base_list)
+        return n_bases, n_data_points
+
+    def get_kwargs_upset_plot(self):
+        """Returns the main args for the py-upset plot function, i.e.:
+                - set_names=base_set_names
+                - occurance_list=occu_list
+                - in_sets=base_list
+                - out_sets=invert_base_list
+                - set_sizes=base_occurances
+                - unique_bases=unique_bases
+        """
+        # 1) get variables:
+        total_base_occurance, occu_list = self._get_total_base_occurance(), self._get_occurance_list()
+        unique_bases, base_set_names = self._get_unique_int_bases(), self.base_fancy_names
+        base_list, invert_base_list = self._get_list_of_bases_per_subset(), self._get_invert_list_of_bases_per_subset()
+        # 2) remove the unwanted data column:
+        # remove feature 8 from the pool of features
+        for remove_nb in self.remove_nbs:
+            # remove in unique_bases
+            if remove_nb in unique_bases:
+                unique_bases.remove(remove_nb)
+            # remove in base_list
+            for i in range(len(base_list)):
+                if remove_nb in base_list[i]:
+                    base_list[i].remove(remove_nb)
+                else:
+                    invert_base_list[i].remove(remove_nb)
+            total_base_occurance.pop(remove_nb, None)
+        base_occurances = [total_base_occurance[k] for k in total_base_occurance.keys()]
+        # some lists need sorting
+        base_occurances_sorted = [base_occurances[idx] for idx in sorted(range(len(base_occurances)), key=lambda k: base_occurances[k], reverse=True)]
+        base_set_names_sorted = [base_set_names[idx] for idx in sorted(range(len(base_occurances)), key=lambda k: base_occurances[k], reverse=True)]
+        unique_bases_sorted = [unique_bases[idx] for idx in sorted(range(len(base_occurances)), key=lambda k: base_occurances[k], reverse=True)]
+        # return kwargs:
+        plot_kwargs = {'set_names': base_set_names_sorted, 'occurance_list': occu_list,
+                       'in_sets': base_list, 'out_sets': invert_base_list,
+                       'set_sizes': base_occurances_sorted, 'unique_bases': unique_bases_sorted}
+        return plot_kwargs
 
 
 
@@ -412,84 +711,36 @@ if __name__ == '__main__':
     # now the 'real' main can begin
     import sys
     path_missing_dict = '/home/sebastian/Documents/astonomy-python/data-storage/dr2_storage_finished_list_full.npy'
-    mis_list = np.load(path_missing_dict)
-    mis_list = sorted(mis_list, key=lambda k: k['occurance'], reverse=True)
-    # 1) prepare input for further usage 
-    n_mis     = [dic['nan-columns'] for dic in mis_list]
-    occu_list = [dic['occurance'] for dic in mis_list]
-    base_list = [get_bases(dic['nan-columns'], get_base_sets(n_mis)) for dic in mis_list]
-    # filter out the top 99.99% most frequently occuring base-set combinations
-    if args.filter:
-        total_nb_entries = sum(occu_list)
-        print(total_nb_entries)
-        sum_occ = 0
-        break_idx = 0
-        for i, occ in enumerate(occu_list):
-            print(occ)
-            sum_occ += occ
-            if sum_occ>total_nb_entries*0.9999:
-                break_idx = i+1
-                break
+    base_names = [('astrometric_pseudo_colour', 'Astrometric pseudo-color'),
+                  ('radial_velocity', 'Radial velocity'),
+                  ('a_g_val', 'Extinction/Redening'),
+                  ('radius_val', 'Radius/Luminiosity'),
+                  ('teff_val', 'Effective Temperature'),
+                  ('phot_rp_mean_mag', 'Flux RP band'),
+                  ('parallax', 'Parallax/Proper motion'),
+                  ('phot_bp_mean_mag', 'Flux BP band') ]
+    prep_data = PrepareData(path_missing_dict, base_names)
+    # filter currently not implemented in PrepareData
+    #if args.filter:
+    #    total_nb_entries = sum(occu_list)
+    #    print(total_nb_entries)
+    #    sum_occ = 0
+    #    break_idx = 0
+    #    for i, occ in enumerate(occu_list):
+    #        print(occ)
+    #        sum_occ += occ
+    #        if sum_occ>total_nb_entries*0.9999:
+    #            break_idx = i+1
+    #            break
+    #    print('break_idx: {}'.format(break_idx))
+    #    base_list = base_list[:break_idx]
+    #    occu_list = occu_list[:break_idx]
+    n_bases, n_data_points = prep_data.get_args_upset_class()
+    upset = UpSetPlot(n_bases=n_bases, n_data_points=n_data_points, log=(not args.linear), filtered=args.filter)
+    plot_kwargs = prep_data.get_kwargs_upset_plot()
+    print(plot_kwargs)
+    fig_dict = upset.main_plot(**plot_kwargs)
 
-        print('break_idx: {}'.format(break_idx))
-        base_list = base_list[:break_idx]
-        occu_list = occu_list[:break_idx]
-
-    # 2) unique bases
-    unique_bases = list(set([item for sublist in base_list for item in sublist]))
-    # count how often a certain base is missing (each time a base is in a base list we 
-    # add up that total_base_occurance for that base...histogram for bases) 
-    total_base_occurance = {}
-    none_missing = 0
-    for base in unique_bases:
-        total_base_occurance[base] = 0
-        for (base_l, occ) in zip(base_list, occu_list):
-            if base in base_l:
-                total_base_occurance[base] += occ
-            elif len(base_l) == 0:
-                none_missing = occ
-
-    # 3) invert the base list
-    invert_base_list = []
-    for base_l in base_list:
-        invert_base_list.append(list(set(unique_bases)-set(base_l)))
-
-    print('\nAvailable bases: {}\n'.format(get_base_sets(n_mis)))
-    print('Base list(len={}): {}'.format(len(base_list),base_list))
-    print('Inverse base list: {}'.format(invert_base_list))
-    # print('Occurance list: {}'.format(occu_list))
-    # after one pass we now have to by hand name the base sets:
-    base_set_names = ['Astrometric pseudo-color', 'Radial velocity', 'Extinction/Redening',
-            'Radius/Luminiosity', 'Effective Temperature', 'Flux RP band', 'Parallax/Proper motion', 'Flux BP band']
-    print('Base names: {}'.format(base_set_names))
-
-    # remove feature 8 from the pool of features
-    remove_nb = 8
-    if remove_nb in unique_bases:
-        unique_bases.remove(remove_nb)
-    for i in range(len(base_list)):
-        if remove_nb in base_list[i]:
-            base_list[i].remove(remove_nb)
-        else:
-            invert_base_list[i].remove(remove_nb)
-    total_base_occurance.pop(remove_nb, None)
-
-    base_occurances = [total_base_occurance[k] for k in total_base_occurance.keys()]
-    sort=True
-    if sort:
-        base_occurances_sorted = [base_occurances[idx] for idx in sorted(range(len(base_occurances)), key=lambda k: base_occurances[k], reverse=True)]
-        base_set_names_sorted = [base_set_names[idx] for idx in sorted(range(len(base_occurances)), key=lambda k: base_occurances[k], reverse=True)]
-        unique_bases_sorted = [unique_bases[idx] for idx in sorted(range(len(base_occurances)), key=lambda k: base_occurances[k], reverse=True)]
-        base_occurances = base_occurances_sorted
-        base_set_names = base_set_names_sorted
-        unique_bases = unique_bases_sorted
-
-    print('Input to upset plot:\n set_names: {}\n occurance_list: {}\n in_sets: {}\n out_sets: {}\n set_sizes: {}\n unique_bases: {}'.format(
-        base_set_names, occu_list, base_list, invert_base_list, base_occurances, unique_bases))
-
-    upset = UpSetPlot(n_bases=len(unique_bases), n_data_points=len(base_list), space=3, log=(not args.linear), filtered=args.filter)
-    fig_dict = upset.main_plot(set_names=base_set_names, occurance_list=occu_list, in_sets=base_list, out_sets=invert_base_list,
-            set_sizes=base_occurances, unique_bases=unique_bases)
-
+    print('Saving figure...')
     plt.savefig('./savefig.png')
 
