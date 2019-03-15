@@ -25,7 +25,7 @@ class UpSetPlot():
         self.greys = plt.cm.Greys([.22, .8])
 
         # figure details
-        self.space = space
+        self.space = 3 if filtered else 7
         self.log = log
         self.filtered = filtered
 
@@ -191,7 +191,6 @@ class UpSetPlot():
         for i, v in enumerate(sorted_set_sizes_ratio):
             ax.text(v+0.1, (i+1), '{:.1f}'.format(v*100), color=self.greys[1], size=11, va='center', ha='right')
 
-
         self._strip_axes(ax, keep_spines=['bottom'])#, keep_ticklabels=['bottom'])
 
         ax.set_ylim((height / 2, (ax.get_ylim()[1] + height / 2)))
@@ -291,9 +290,9 @@ class UpSetPlot():
             for i in range_labels:
                 ax.text(xlim[1]*0.99, 10**i * 1.3, r'$10^{%i}$' % i, ha='center', va='bottom', color='grey')
 
-
         gap = max(ylim) / 500.0 * 20
-        ax.set_ylim(ylim[0] - gap, ylim[1] + gap)
+        if not self.log:
+            ax.set_ylim(ylim[0] - gap, ylim[1] + gap)
         ylim = ax.get_ylim()
         ax.spines['left'].set_bounds(ylim[0], ylim[1])
 
@@ -484,6 +483,9 @@ if __name__ == '__main__':
         base_occurances = base_occurances_sorted
         base_set_names = base_set_names_sorted
         unique_bases = unique_bases_sorted
+
+    print('Input to upset plot:\n set_names: {}\n occurance_list: {}\n in_sets: {}\n out_sets: {}\n set_sizes: {}\n unique_bases: {}'.format(
+        base_set_names, occu_list, base_list, invert_base_list, base_occurances, unique_bases))
 
     upset = UpSetPlot(n_bases=len(unique_bases), n_data_points=len(base_list), space=3, log=(not args.linear), filtered=args.filter)
     fig_dict = upset.main_plot(set_names=base_set_names, occurance_list=occu_list, in_sets=base_list, out_sets=invert_base_list,
